@@ -132,7 +132,8 @@ namespace Moq
 
         private class BaseInvocation
         {
-            public MethodInfo method;
+            public MethodInfo Method;
+            public int ArgumentHash;
             public ICallContext BaseInvocationResult;
         }
         private System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Stack<BaseInvocation>> baseInvocations = 
@@ -140,26 +141,51 @@ namespace Moq
 
         public object InvokeBase(LambdaExpression expression, MethodInfo method, object mockObject)
         {
-            //push expected invocation to the stack for this thread
             var bi = new BaseInvocation
-                {
-                    method = method,
-                    BaseInvocationResult = null
-                };
-            this.baseInvocations.AddOrUpdate(System.Threading.Thread.CurrentThread,
-                new Stack<BaseInvocation>(new []{ bi }),
-                (th, s1) => { s1.Push(bi); return s1; });
+            {
+                Method = method,
+                BaseInvocationResult = null
+            };
+
+            //refactor method call to call into our intercepting invoker
+            var call = (MethodCallExpression)expression.Body;            
+            expression = Expression.Lambda(
+                Expression.Call(
+                    Expression.Constant(this), this.GetType().GetMethod("InvokeBaseIntercept"),
+                        new []{Expression.Constant(bi), Expression.Constant(call.Method), Expression.Constant(mockObject)}.Concat(call.Arguments)),
+                    expression.Parameters
+                );
 
             //do the invocation (could result in recursive invocations
             expression.Compile().InvokePreserveStack(mockObject);
 
+            return bi.BaseInvocationResult.ReturnValue;
+        }
+
+        private int HashAggregate(params object[] args)
+        {
+            return args.Aggregate(359, (offset, arg) => 997 * (offset ^ 991) * args.GetHashCode());
+        }
+
+        private void InvokeBaseIntercept(BaseInvocation bi, MethodInfo call, object mockObject, params object[] args)
+        {
+            bi.ArgumentHash = this.HashAggregate(args);
+
+            //push expected invocation to the stack for this thread            
+            this.baseInvocations.AddOrUpdate(System.Threading.Thread.CurrentThread,
+                new Stack<BaseInvocation>(new []{ bi }),
+                (th, s1) => { s1.Push(bi); return s1; });
+
+            object ret = call.Invoke(mockObject, args);
+
             //pop the actual invocation back off the stack
             Stack<BaseInvocation> stack = this.baseInvocations[System.Threading.Thread.CurrentThread];
-            bi = stack.Pop();
+            var popped = stack.Pop();
+            if (!popped.Equals(bi))
+                throw new Exception("Error invoking base, recursive invocations caused stack mismatch");
+
             if (stack.Count == 0)
                 this.baseInvocations.TryRemove(System.Threading.Thread.CurrentThread, out stack);
-
-            return bi.BaseInvocationResult.ReturnValue;
         }
 
 		[SuppressMessage("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
@@ -178,13 +204,18 @@ namespace Moq
 
             Stack<BaseInvocation> baseInvocationStack;
             if (this.baseInvocations.TryGetValue(System.Threading.Thread.CurrentThread, out baseInvocationStack) &&
-                    baseInvocationStack != null && baseInvocationStack.Count > 0 &&
-                    baseInvocationStack.Peek().BaseInvocationResult == null)
+                    baseInvocationStack != null && baseInvocationStack.Count > 0)
             {
-                //update before invoke so we don't do it recursively
-                baseInvocationStack.Peek().BaseInvocationResult = invocation;
+                var bi = baseInvocationStack.Peek();
 
-                invocation.InvokeBase();
+                //be doubly sure we are getting the right method
+                if (bi.BaseInvocationResult == null && bi.ArgumentHash == this.HashAggregate(invocation.Arguments))
+                {
+                    //update before invoke so we don't do it recursively
+                    baseInvocationStack.Peek().BaseInvocationResult = invocation;
+
+                    invocation.InvokeBase();
+                }
             }
 
 			// TODO: too many ifs in this method.

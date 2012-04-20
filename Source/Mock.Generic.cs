@@ -394,7 +394,7 @@ namespace Moq
         /// <typeparam name="TReturns"></typeparam>
         /// <param name="expression"></param>
         /// <returns></returns>
-        public TReturns InvokeBase<TReturns>(Expression<Action<T>> expression)
+        public TReturns InvokeBase<TReturns>(Expression<Func<T, TReturns>> expression)
         {
             if (expression.Body.NodeType != ExpressionType.Call)
                 throw new ArgumentException("Expression must be a method call");
