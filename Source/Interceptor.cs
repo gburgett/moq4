@@ -130,6 +130,38 @@ namespace Moq
 			orderedCalls.Add(call);
 		}
 
+        private class BaseInvocation
+        {
+            public MethodInfo method;
+            public ICallContext BaseInvocationResult;
+        }
+        private System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Stack<BaseInvocation>> baseInvocations = 
+            new System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Stack<BaseInvocation>>();
+
+        public object InvokeBase(LambdaExpression expression, MethodInfo method, object mockObject)
+        {
+            //push expected invocation to the stack for this thread
+            var bi = new BaseInvocation
+                {
+                    method = method,
+                    BaseInvocationResult = null
+                };
+            this.baseInvocations.AddOrUpdate(System.Threading.Thread.CurrentThread,
+                new Stack<BaseInvocation>(new []{ bi }),
+                (th, s1) => { s1.Push(bi); return s1; });
+
+            //do the invocation (could result in recursive invocations
+            expression.Compile().InvokePreserveStack(mockObject);
+
+            //pop the actual invocation back off the stack
+            Stack<BaseInvocation> stack = this.baseInvocations[System.Threading.Thread.CurrentThread];
+            bi = stack.Pop();
+            if (stack.Count == 0)
+                this.baseInvocations.TryRemove(System.Threading.Thread.CurrentThread, out stack);
+
+            return bi.BaseInvocationResult.ReturnValue;
+        }
+
 		[SuppressMessage("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
 		public void Intercept(ICallContext invocation)
 		{
@@ -143,6 +175,17 @@ namespace Moq
 			{
 				FluentMockContext.Current.Add(this.Mock, invocation);
 			}
+
+            Stack<BaseInvocation> baseInvocationStack;
+            if (this.baseInvocations.TryGetValue(System.Threading.Thread.CurrentThread, out baseInvocationStack) &&
+                    baseInvocationStack != null && baseInvocationStack.Count > 0 &&
+                    baseInvocationStack.Peek().BaseInvocationResult == null)
+            {
+                //update before invoke so we don't do it recursively
+                baseInvocationStack.Peek().BaseInvocationResult = invocation;
+
+                invocation.InvokeBase();
+            }
 
 			// TODO: too many ifs in this method.
 			// see how to refactor with strategies.

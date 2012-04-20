@@ -388,6 +388,29 @@ namespace Moq
 
 		#endregion
 
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <typeparam name="TReturns"></typeparam>
+        /// <param name="expression"></param>
+        /// <returns></returns>
+        public TReturns InvokeBase<TReturns>(Expression<Action<T>> expression)
+        {
+            if (expression.Body.NodeType != ExpressionType.Call)
+                throw new ArgumentException("Expression must be a method call");
+
+            var call = (MethodCallExpression)expression.Body;
+            if (!call.Method.IsVirtual || call.Object == null)
+                throw new ArgumentException("Expression must be a method call to a virtual method on the class");
+
+            if (call.Method.DeclaringType != typeof(T) || !ReferenceEquals(call.Object, expression.Parameters[0]))
+                throw new ArgumentException("Method call must be invoked on the mocked object given as a parameter");
+            if (call.Method.DeclaringType.IsInterface)
+                throw new ArgumentException("Mock type cannot be an interface, there is no base to invoke!");
+
+            return (TReturns)this.Interceptor.InvokeBase(expression, call.Method, this.Object);
+        }
+
 		// NOTE: known issue. See https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=318122
 		//public static implicit operator TInterface(Mock<T> mock)
 		//{
