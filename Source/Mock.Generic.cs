@@ -396,6 +396,24 @@ namespace Moq
         /// <returns></returns>
         public TReturns InvokeBase<TReturns>(Expression<Func<T, TReturns>> expression)
         {
+            ValidateInvokeBaseExpression(expression);
+
+            return (TReturns)this.Interceptor.InvokeBase(expression, ((MethodCallExpression)expression.Body).Method, this.Object);
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="expression"></param>
+        public void InvokeBase(Expression<Action<T>> expression)
+        {
+            ValidateInvokeBaseExpression(expression);
+
+            this.Interceptor.InvokeBase(expression, ((MethodCallExpression)expression.Body).Method, this.Object);
+        }
+
+        private void ValidateInvokeBaseExpression(LambdaExpression expression)
+        {
             if (expression.Body.NodeType != ExpressionType.Call)
                 throw new ArgumentException("Expression must be a method call");
 
@@ -406,9 +424,9 @@ namespace Moq
             if (call.Method.DeclaringType != typeof(T) || !ReferenceEquals(call.Object, expression.Parameters[0]))
                 throw new ArgumentException("Method call must be invoked on the mocked object given as a parameter");
             if (call.Method.DeclaringType.IsInterface)
-                throw new ArgumentException("Mock type cannot be an interface, there is no base to invoke!");
-
-            return (TReturns)this.Interceptor.InvokeBase(expression, call.Method, this.Object);
+                throw new ArgumentException("Mock type cannot be an interface, there is no base implementation to invoke!");
+            if (call.Method.IsAbstract)
+                throw new ArgumentException("Method call cannot be an abstract method, there is no base implementation to invoke!");
         }
 
 		// NOTE: known issue. See https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=318122

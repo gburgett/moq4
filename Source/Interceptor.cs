@@ -136,8 +136,8 @@ namespace Moq
             public int ArgumentHash;
             public ICallContext BaseInvocationResult;
         }
-        private System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Stack<BaseInvocation>> baseInvocations = 
-            new System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, Stack<BaseInvocation>>();
+        private System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, BaseInvocation> baseInvocations = 
+            new System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, BaseInvocation>();
 
         public object InvokeBase(LambdaExpression expression, MethodInfo method, object mockObject)
         {
@@ -147,14 +147,21 @@ namespace Moq
                 BaseInvocationResult = null
             };
 
+            System.Diagnostics.Debug.WriteLine("Original Expression: " + expression);
+
             //refactor method call to call into our intercepting invoker
-            var call = (MethodCallExpression)expression.Body;            
+            var call = (MethodCallExpression)expression.Body;
+            var interceptMethod = this.GetType().GetMethod("InvokeBaseIntercept", BindingFlags.NonPublic | BindingFlags.Instance);
             expression = Expression.Lambda(
                 Expression.Call(
-                    Expression.Constant(this), this.GetType().GetMethod("InvokeBaseIntercept"),
-                        new []{Expression.Constant(bi), Expression.Constant(call.Method), Expression.Constant(mockObject)}.Concat(call.Arguments)),
+                        Expression.Constant(this), interceptMethod,
+                        Expression.Constant(bi), Expression.Constant(call.Method), Expression.Constant(mockObject),
+                        Expression.NewArrayInit(typeof(object), call.Arguments.Select(arg => arg.CastTo<object>()).ToArray())
+                    ),
                     expression.Parameters
                 );
+
+            System.Diagnostics.Debug.WriteLine("Rewritten Expression: " + expression);
 
             //do the invocation (could result in recursive invocations
             expression.Compile().InvokePreserveStack(mockObject);
@@ -173,19 +180,13 @@ namespace Moq
 
             //push expected invocation to the stack for this thread            
             this.baseInvocations.AddOrUpdate(System.Threading.Thread.CurrentThread,
-                new Stack<BaseInvocation>(new []{ bi }),
-                (th, s1) => { s1.Push(bi); return s1; });
+                bi,
+                (th, s1) => bi);
 
             object ret = call.Invoke(mockObject, args);
 
-            //pop the actual invocation back off the stack
-            Stack<BaseInvocation> stack = this.baseInvocations[System.Threading.Thread.CurrentThread];
-            var popped = stack.Pop();
-            if (!popped.Equals(bi))
-                throw new Exception("Error invoking base, recursive invocations caused stack mismatch");
-
-            if (stack.Count == 0)
-                this.baseInvocations.TryRemove(System.Threading.Thread.CurrentThread, out stack);
+            if (!Equals(ret, bi.BaseInvocationResult.ReturnValue))
+                throw new Exception(string.Format("Error invoking base, Result {0} is not equal to returned value {1}", bi.BaseInvocationResult.ReturnValue, ret));
         }
 
 		[SuppressMessage("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
@@ -202,19 +203,24 @@ namespace Moq
 				FluentMockContext.Current.Add(this.Mock, invocation);
 			}
 
-            Stack<BaseInvocation> baseInvocationStack;
-            if (this.baseInvocations.TryGetValue(System.Threading.Thread.CurrentThread, out baseInvocationStack) &&
-                    baseInvocationStack != null && baseInvocationStack.Count > 0)
+            BaseInvocation baseInvocation;
+            if (this.baseInvocations.TryGetValue(System.Threading.Thread.CurrentThread, out baseInvocation) &&
+                    baseInvocation != null)
             {
-                var bi = baseInvocationStack.Peek();
-
                 //be doubly sure we are getting the right method
-                if (bi.BaseInvocationResult == null && bi.ArgumentHash == this.HashAggregate(invocation.Arguments))
+                if (baseInvocation.BaseInvocationResult == null && baseInvocation.Method.Equals(invocation.Method))
                 {
                     //update before invoke so we don't do it recursively
-                    baseInvocationStack.Peek().BaseInvocationResult = invocation;
+                    baseInvocation.BaseInvocationResult = invocation;
+                    this.baseInvocations.TryRemove(System.Threading.Thread.CurrentThread, out baseInvocation);
 
+                    System.Diagnostics.Debug.WriteLine(string.Format("Invoking base of method {0} with arguments {{{1}}}", invocation.Method, string.Join(", ",invocation.Arguments)));
                     invocation.InvokeBase();
+                    return;
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine(string.Format("baseInvocation expected for method {0} but proxy call was for method {1}, ignoring and continuing.", baseInvocation.Method, invocation.Method));
                 }
             }
 

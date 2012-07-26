@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using Xunit;
 
@@ -762,7 +763,140 @@ namespace Moq.Tests
 			Assert.NotNull(new Mock<ClassLibrary1.IFooInternal>().Object);
 		}
 
-		public class Foo
+        [Fact]
+        public void InvokeBase_SimpleInvoke()
+        {
+            var mock = new Mock<FooBase>();
+
+            mock.InvokeBase(x => x.BaseCall());
+
+            Assert.True(mock.Object.BaseCalled);
+        }
+
+        [Fact]
+        public void InvokeBase_WithArgumentsAndReturnValue()
+        {
+            var mock = new Mock<FooBase>();
+
+            string arg = "Hello";
+            var ret = mock.InvokeBase(x => x.BaseCall(arg));
+
+            Assert.Equal(false, ret);
+            Assert.True(mock.Object.BaseReturnCalled);
+        }
+
+        [Fact]
+        public void InvokeBase_WithinCallback()
+        {
+            var mock = new Mock<FooBase>();
+
+            bool ret = true;
+            mock.Setup(x => x.BaseCall(It.IsAny<string>()))
+                .Callback((string s) => ret = mock.InvokeBase(b => b.BaseCall("Callback: " + s)));
+
+            mock.Object.BaseCall("hi");
+
+            Assert.Equal(false, ret);
+            Assert.True(mock.Object.BaseReturnCalled);
+        }
+
+        [Fact]
+        public void InvokeRecursiveBase()
+        {
+            var mock = new Mock<FooBase>();
+
+            var saw = new List<int>();
+            mock.Setup(x => x.BaseIncrementRecursive(It.IsAny<int>()))
+                .Callback((int i) => {saw.Add(i); mock.InvokeBase(b => b.BaseIncrementRecursive(i));});
+
+            mock.Object.BaseIncrementRecursive(0);
+
+            Assert.Equal(mock.Object.BaseIncrementRecursiveDepth + 1, mock.Object.BaseIncrementRecursiveCalls);
+            Assert.Equal(mock.Object.BaseIncrementRecursiveCalls, saw.Count);
+            for(int i = 0; i < mock.Object.BaseIncrementRecursiveCalls; i++)
+            {
+                Assert.Equal(i, saw[i]);
+            }
+        }
+
+        [Fact]
+        public void InvokeBaseNested()
+        {
+            var mock = new Mock<FooBase>();
+
+            var saw = new List<int>();
+            mock.Setup(x => x.BaseIncrement(It.IsAny<int>()))
+                .Callback((int i) => saw.Add(i))
+                .Returns((int i) => mock.InvokeBase(b => b.BaseIncrement(mock.InvokeBase(b2 => b2.BaseIncrement(i)))));
+
+            int result = mock.Object.BaseIncrement(1);
+
+            Assert.Equal(3, result);
+            Assert.Equal(1, saw.Count);
+            Assert.Equal(1, saw[0]);
+        }
+
+        [Fact]
+        public void InvokeBase_NonMethodCall_Throws()
+        {
+            var mock = new Mock<FooBase>();
+
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => 9)
+            );
+        }
+
+        [Fact]
+        public void InvokeBase_Interface_Throws()
+        {
+            var mock = new Mock<IFoo>();
+
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => b.Echo(1))
+            );
+        }
+
+        [Fact]
+        public void InvokeBase_AbstractBaseMethod_Throws()
+        {
+            var mock = new Mock<FooBase>();
+
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => b.Do(1))
+            );
+        }
+
+        [Fact]
+        public void InvokeBase_WrongInstance_Throws()
+        {
+            var mock = new Mock<FooBase>();
+            var mock2 = new Mock<FooBase>();
+
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => mock2.Object.Do(1))
+            );
+        }
+
+        [Fact]
+        public void InvokeBase_StaticMethod_Throws()
+        {
+            var mock = new Mock<FooBase>();
+
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => FooBase.StaticCheck())
+            );
+        }
+
+        [Fact]
+        public void InvokeBase_ExtensionMethod_Throws()
+        {
+            var mock = new Mock<IFoo>();
+            Assert.Throws<ArgumentException>(
+                () => mock.InvokeBase(b => b.IncrementExtension(1))
+            );
+        }
+
+        public class Foo
 		{
 			public Foo() : this(new Bar()) { }
 
@@ -792,6 +926,8 @@ namespace Moq.Tests
 			{
 			}
 		}
+
+        
 
 		public sealed class FooSealed { }
 		class FooService : IFooService { }
@@ -914,6 +1050,28 @@ namespace Moq.Tests
 				BaseReturnCalled = true;
 				return default(bool);
 			}
+
+            public virtual int BaseIncrement(int i)
+            {
+                return i + 1;
+            }
+
+            public int BaseIncrementRecursiveCalls = 0;
+            public int BaseIncrementRecursiveDepth = 5;
+
+            public virtual int BaseIncrementRecursive(int i)
+            {
+                BaseIncrementRecursiveCalls++;
+                if (i >= BaseIncrementRecursiveDepth)
+                    return i;
+                else
+                    return BaseIncrementRecursive(i + 1);
+            }
+
+            public static bool StaticCheck()
+            {
+                return true;
+            }
 		}
 
 		public interface INewFoo : IFoo
@@ -925,4 +1083,12 @@ namespace Moq.Tests
 		{
 		}
 	}
+
+    public static class FooExtensions
+    {
+        public static int IncrementExtension(this MockFixture.IFoo foo, int i)
+        {
+            return i++;
+        }
+    }
 }
